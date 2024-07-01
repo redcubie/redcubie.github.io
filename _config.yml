@@ -28,7 +28,7 @@ twitter_username: ""
 github_username:  ""
 
 # Build settings
-theme: hacker
+theme: jekyll-theme-hacker
 plugins:
   - jekyll-feed
 
