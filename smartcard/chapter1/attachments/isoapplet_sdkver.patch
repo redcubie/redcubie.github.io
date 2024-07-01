@@ -1,0 +1,13 @@
+diff --git a/build.xml b/build.xml
+index bc143ad..6ba5a45 100644
+--- a/build.xml
++++ b/build.xml
+@@ -7,7 +7,7 @@
+     <description>Builds the project. </description>
+     <target name="dist" description="generate the distribution">
+         <tstamp/>
+-        <javacard jckit="ext/sdks/jc310r20210706_kit">
++        <javacard jckit="ext/sdks/jc304_kit">
+             <cap targetsdk="ext/sdks/jc304_kit" aid="f2:76:a2:88:bc:fb:a6:9d:34:f3:10" output="IsoApplet.cap" sources="src" version="1.0" jar="IsoApplet.jar">
+                 <applet class="xyz.wendland.javacard.pki.isoapplet.IsoApplet" aid="f2:76:a2:88:bc:fb:a6:9d:34:f3:10:01"/>
+             </cap>

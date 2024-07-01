@@ -1,0 +1,24 @@
+diff --git a/src/main/java/com/licel/jcardsim/framework/APDUProxy.java b/src/main/java/com/licel/jcardsim/framework/APDUProxy.java
+index cda41e8..cbe7d44 100644
+--- a/src/main/java/com/licel/jcardsim/framework/APDUProxy.java
++++ b/src/main/java/com/licel/jcardsim/framework/APDUProxy.java
+@@ -279,7 +279,8 @@ public class APDUProxy {
+      */
+     public void setOutgoingLength(short len)
+             throws APDUException {
+-        final short max = extended ? Short.MAX_VALUE : T0_OBS;
++        // final short max = extended ? Short.MAX_VALUE : T0_OBS;
++        final short max = Short.MAX_VALUE;
+         if (!flags[OUTGOING_FLAG]) {
+             APDUException.throwIt(APDUException.ILLEGAL_USE);
+         }
+@@ -376,7 +377,8 @@ public class APDUProxy {
+ 
+     public void sendBytes(short bOff, short len)
+             throws APDUException {
+-        final short max = extended ? Short.MAX_VALUE : T0_OBS;
++        // final short max = extended ? Short.MAX_VALUE : T0_OBS;
++        final short max = Short.MAX_VALUE;
+         if (bOff < 0 || len < 0 || (short) (bOff + len) > max) {
+             APDUException.throwIt(APDUException.BUFFER_BOUNDS);
+         }

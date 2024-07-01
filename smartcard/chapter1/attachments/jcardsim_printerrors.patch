@@ -1,0 +1,14 @@
+diff --git a/src/main/java/com/licel/jcardsim/base/SimulatorRuntime.java b/src/main/java/com/licel/jcardsim/base/SimulatorRuntime.java
+index 410e77f..fa49614 100644
+--- a/src/main/java/com/licel/jcardsim/base/SimulatorRuntime.java
++++ b/src/main/java/com/licel/jcardsim/base/SimulatorRuntime.java
+@@ -307,6 +307,9 @@ public class SimulatorRuntime {
+             if (e instanceof ISOException) {
+                 Util.setShort(theSW, (short) 0, ((ISOException) e).getReason());
+             }
++            else{
++                e.printStackTrace(System.err);
++            }
+         }
+         finally {
+             selecting = false;

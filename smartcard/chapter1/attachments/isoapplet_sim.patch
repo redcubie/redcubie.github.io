@@ -1,0 +1,275 @@
+From b91626e3b608d3b3b2c592b9632f9f092f2513b8 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Wed, 15 Mar 2023 17:21:09 -0400
+Subject: [PATCH] Support jcardsim and J3H081
+
+jcardsim's PersistentSimulatorRuntime cannot persist Signature objects,
+so make those temporary and not part of the class object. Additionally,
+allow skipping checks for RSA4096 and for RSA PSS, as even just testing
+them can prevent applet installation on certain cards (J3H081).
+---
+ .gitignore                                    |   2 +-
+ README.md                                     |  26 +++++
+ build.xml                                     |   2 +-
+ .../javacard/pki/isoapplet/IsoApplet.java     | 110 ++++++++++--------
+ 4 files changed, 90 insertions(+), 50 deletions(-)
+
+diff --git a/.gitignore b/.gitignore
+index 5518ead5..114ae7bd 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,6 +1,6 @@
+-ant-javacard.jar
+ doc
+ *.swp
+ *.orig
+ *.un~
+ *.cap
++*.jar
+diff --git a/README.md b/README.md
+index 28491f73..c99b776f 100644
+--- a/README.md
++++ b/README.md
+@@ -37,5 +37,31 @@ After cloning the IsoApplet repository, all you have to do is:
+ # Installation
+ Install the CAP-file (IsoApplet.cap) to your Java Card smart card (e.g. with [GlobalPlatformPro](https://github.com/martinpaljak/GlobalPlatformPro)).
+ 
++# Using with jcardsim
++Make sure to install the appropriate vsmartcard package. On Debian/Ubuntu, this is called vsmartcard-vpcd. You may need to restart pcscd after installing it. Note: This is only appropriate for development machines; it creates an open listening socket with no authentication that pcscd exposes as the first reader so it is trivial to MitM for an attacker.
++
++Setup a jcardsim.cfg file like so:
++```
++com.licel.jcardsim.card.applet.0.AID=F276A288BCFBA69D34F31001
++com.licel.jcardsim.card.applet.0.Class=xyz.wendland.javacard.pki.isoapplet.IsoApplet
++com.licel.jcardsim.terminal.type=2
++com.licel.jcardsim.vsmartcard.host=127.0.0.1
++com.licel.jcardsim.vsmartcard.port=35963
++```
++
++Run jcardsim with the IsoApplet.jar file on the path:
++```java -cp IsoApplet.jar:jcardsim-3.0.5-SNAPSHOT.jar com.licel.jcardsim.remote.VSmartCard  jcardsim.cfg```
++
++Instantiate the applet in jcardsim (this example uses gpshell):
++```
++echo 'establish_context
++card_connect
++send_apdu -sc 0 -APDU 80b800000d0cF276A288BCFBA69D34F31001
++card_disconnect
++release_context' | gpshell
++```
++
++Now you should be able to use pkcs15-init and friends.
++
+ **Have a look at the wiki for more information:** https://github.com/philipWendland/IsoApplet/wiki
+ 
+diff --git a/build.xml b/build.xml
+index 3f2d7869..bc143ad3 100644
+--- a/build.xml
++++ b/build.xml
+@@ -8,7 +8,7 @@
+     <target name="dist" description="generate the distribution">
+         <tstamp/>
+         <javacard jckit="ext/sdks/jc310r20210706_kit">
+-            <cap targetsdk="ext/sdks/jc304_kit" aid="f2:76:a2:88:bc:fb:a6:9d:34:f3:10" output="IsoApplet.cap" sources="src" version="1.0">
++            <cap targetsdk="ext/sdks/jc304_kit" aid="f2:76:a2:88:bc:fb:a6:9d:34:f3:10" output="IsoApplet.cap" sources="src" version="1.0" jar="IsoApplet.jar">
+                 <applet class="xyz.wendland.javacard.pki.isoapplet.IsoApplet" aid="f2:76:a2:88:bc:fb:a6:9d:34:f3:10:01"/>
+             </cap>
+         </javacard>
+diff --git a/src/xyz/wendland/javacard/pki/isoapplet/IsoApplet.java b/src/xyz/wendland/javacard/pki/isoapplet/IsoApplet.java
+index 451a57f9..b1136992 100644
+--- a/src/xyz/wendland/javacard/pki/isoapplet/IsoApplet.java
++++ b/src/xyz/wendland/javacard/pki/isoapplet/IsoApplet.java
+@@ -23,6 +23,8 @@
+ import javacard.framework.ISO7816;
+ import javacard.framework.ISOException;
+ import javacard.framework.APDU;
++import javacard.framework.SystemException;
++import javacard.framework.TransactionException;
+ import javacard.framework.JCSystem;
+ import javacard.framework.Util;
+ import javacard.framework.OwnerPIN;
+@@ -61,6 +63,11 @@ public class IsoApplet extends Applet implements ExtendedLength {
+     /* Card-specific configuration */
+     public static final boolean DEF_PRIVATE_KEY_IMPORT_ALLOWED = false;
+ 
++    /* Certain cards (J3H081) break in unexpected ways testing these at
++     * runtime. Allow them to be forced off so no test is run. */
++    public static final boolean DEF_TEST_RSA_4096 = true;
++    public static final boolean DEF_TEST_RSA_PSS = true;
++
+     /* ISO constants not in the "ISO7816" interface */
+     // File system related INS:
+     public static final byte INS_CREATE_FILE = (byte) 0xE0;
+@@ -138,12 +145,6 @@ public class IsoApplet extends Applet implements ExtendedLength {
+     private Key[] keys = null;
+     private byte[] ram_buf = null;
+     private Cipher rsaPkcs1Cipher = null;
+-    private Signature ecdsaSignature = null;
+-    private Signature rsaSha1PssSignature = null;
+-    private Signature rsaSha224PssSignature = null;
+-    private Signature rsaSha256PssSignature = null;
+-    private Signature rsaSha384PssSignature = null;
+-    private Signature rsaSha512PssSignature = null;
+     private RandomData randomData = null;
+     private byte api_features;
+ 
+@@ -179,14 +180,13 @@ protected IsoApplet() {
+ 
+         // API features: probe card support for ECDSA
+         try {
+-            ecdsaSignature = Signature.getInstance(MessageDigest.ALG_NULL, Signature.SIG_CIPHER_ECDSA, Cipher.PAD_NULL, false);
++            Signature.getInstance(MessageDigest.ALG_NULL, Signature.SIG_CIPHER_ECDSA, Cipher.PAD_NULL, false);
+             api_features |= API_FEATURE_ECC;
+         } catch (CryptoException e) {
+             if(e.getReason() == CryptoException.NO_SUCH_ALGORITHM) {
+                 /* Few Java Cards do not support ECDSA at all.
+                  * We should not throw an exception in this cases
+                  * as this would prevent installation. */
+-                ecdsaSignature = null;
+                 api_features &= ~API_FEATURE_ECC;
+             } else {
+                 throw e;
+@@ -194,39 +194,46 @@ protected IsoApplet() {
+         }
+ 
+         // API features: probe card support for 4096 bit RSA keys
+-        try {
+-            RSAPrivateCrtKey testKey = (RSAPrivateCrtKey)KeyBuilder.buildKey(KeyBuilder.TYPE_RSA_CRT_PRIVATE, KeyBuilder.LENGTH_RSA_4096, false);
+-            api_features |= API_FEATURE_RSA_4096;
+-        } catch (CryptoException e) {
+-            if(e.getReason() == CryptoException.NO_SUCH_ALGORITHM) {
+-                api_features &= ~API_FEATURE_RSA_4096;
+-            } else {
+-                throw e;
++        if (DEF_TEST_RSA_4096) {
++            try {
++                RSAPrivateCrtKey testKey = (RSAPrivateCrtKey)KeyBuilder.buildKey(KeyBuilder.TYPE_RSA_CRT_PRIVATE, KeyBuilder.LENGTH_RSA_4096, false);
++                api_features |= API_FEATURE_RSA_4096;
++            } catch (CryptoException e) {
++                if(e.getReason() == CryptoException.NO_SUCH_ALGORITHM) {
++                    api_features &= ~API_FEATURE_RSA_4096;
++                } else {
++                    throw e;
++                }
++            } catch (TransactionException e) {
++                // J3H081 from javacardsdk.com (FUTAKO) raises this exception instead.
++                if(e.getReason() == TransactionException.INTERNAL_FAILURE) {
++                    api_features &= ~API_FEATURE_RSA_4096;
++                } else {
++                    throw e;
++                }
+             }
+         }
+ 
++
+         /* API features: probe card support for RSA and PSS padding with SHA-1 and all SHA-2 algorithms
+          * to be used with Signature.signPreComputedHash() */
+-        try {
+-            rsaSha1PssSignature = Signature.getInstance(Signature.ALG_RSA_SHA_PKCS1_PSS, false);
+-            rsaSha224PssSignature = Signature.getInstance(Signature.ALG_RSA_SHA_224_PKCS1_PSS, false);
+-            rsaSha256PssSignature = Signature.getInstance(Signature.ALG_RSA_SHA_256_PKCS1_PSS, false);
+-            rsaSha384PssSignature = Signature.getInstance(Signature.ALG_RSA_SHA_384_PKCS1_PSS, false);
+-            rsaSha512PssSignature = Signature.getInstance(Signature.ALG_RSA_SHA_512_PKCS1_PSS, false);
+-            api_features |= API_FEATURE_RSA_PSS;
+-        } catch (CryptoException e) {
+-            if(e.getReason() == CryptoException.NO_SUCH_ALGORITHM) {
+-                /* Certain Java Cards do not support this algorithm.
+-                 * We should not throw an exception in this cases
+-                 * as this would prevent installation. */
+-                rsaSha1PssSignature = null;
+-                rsaSha224PssSignature = null;
+-                rsaSha384PssSignature = null;
+-                rsaSha256PssSignature = null;
+-                rsaSha512PssSignature = null;
+-                api_features &= ~API_FEATURE_RSA_PSS;
+-            } else {
+-                throw e;
++        if (DEF_TEST_RSA_PSS) {
++            try {
++                Signature.getInstance(Signature.ALG_RSA_SHA_PKCS1_PSS, false);
++                Signature.getInstance(Signature.ALG_RSA_SHA_224_PKCS1_PSS, false);
++                Signature.getInstance(Signature.ALG_RSA_SHA_256_PKCS1_PSS, false);
++                Signature.getInstance(Signature.ALG_RSA_SHA_384_PKCS1_PSS, false);
++                Signature.getInstance(Signature.ALG_RSA_SHA_512_PKCS1_PSS, false);
++                api_features |= API_FEATURE_RSA_PSS;
++            } catch (CryptoException e) {
++                if(e.getReason() == CryptoException.NO_SUCH_ALGORITHM) {
++                    /* Certain Java Cards do not support this algorithm.
++                     * We should not throw an exception in this cases
++                     * as this would prevent installation. */
++                    api_features &= ~API_FEATURE_RSA_PSS;
++                } else {
++                    throw e;
++                }
+             }
+         }
+ 
+@@ -1101,7 +1108,7 @@ public void processManageSecurityEnvironment(APDU apdu) throws ISOException {
+             if(privKeyRef < 0) {
+                 ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+             }
+-            if(algRef == ALG_GEN_EC && ecdsaSignature == null) {
++            if(algRef == ALG_GEN_EC && (api_features & API_FEATURE_ECC) == 0) {
+                 // There are cards that do not support ECDSA at all.
+                 ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+             }
+@@ -1129,7 +1136,7 @@ public void processManageSecurityEnvironment(APDU apdu) throws ISOException {
+                 if(keys[privKeyRef].getType() != KeyBuilder.TYPE_EC_FP_PRIVATE) {
+                     ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+                 }
+-                if(ecdsaSignature == null) {
++                if((api_features & API_FEATURE_ECC) == 0) {
+                     ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+                 }
+ 
+@@ -1297,24 +1304,27 @@ private void computeDigitalSignature(APDU apdu) throws ISOException {
+             } else if (currentAlgorithmRef[0] == ALG_RSA_PAD_PSS) {
+                 // ALG_RSA_PAD_PSS with pre-computed hash.
+                 // Determine Signature object by hash length.
++                Signature obj = null;
+                 if(lc == (short) 20) {
+-                    rsaSha1PssSignature.init(rsaKey, Signature.MODE_SIGN);
+-                    sigLen = rsaSha1PssSignature.signPreComputedHash(ram_buf, (short)0, lc, ram_buf, lc);
++                    obj = Signature.getInstance(Signature.ALG_RSA_SHA_PKCS1_PSS, false);
+                 } else if (lc == (short) 28) {
+-                    rsaSha224PssSignature.init(rsaKey, Signature.MODE_SIGN);
+-                    sigLen = rsaSha224PssSignature.signPreComputedHash(ram_buf, (short)0, lc, ram_buf, lc);
++                    obj = Signature.getInstance(Signature.ALG_RSA_SHA_224_PKCS1_PSS, false);
+                 } else if (lc == (short) 32) {
+-                    rsaSha256PssSignature.init(rsaKey, Signature.MODE_SIGN);
+-                    sigLen = rsaSha256PssSignature.signPreComputedHash(ram_buf, (short)0, lc, ram_buf, lc);
++                    obj = Signature.getInstance(Signature.ALG_RSA_SHA_256_PKCS1_PSS, false);
+                 } else if (lc == (short) 48) {
+-                    rsaSha384PssSignature.init(rsaKey, Signature.MODE_SIGN);
+-                    sigLen = rsaSha384PssSignature.signPreComputedHash(ram_buf, (short)0, lc, ram_buf, lc);
++                    obj = Signature.getInstance(Signature.ALG_RSA_SHA_384_PKCS1_PSS, false);
+                 } else if (lc == (short) 64) {
+-                    rsaSha512PssSignature.init(rsaKey, Signature.MODE_SIGN);
+-                    sigLen = rsaSha512PssSignature.signPreComputedHash(ram_buf, (short)0, lc, ram_buf, lc);
++                    obj = Signature.getInstance(Signature.ALG_RSA_SHA_512_PKCS1_PSS, false);
+                 } else {
+                     ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+                 }
++
++                obj.init(rsaKey, Signature.MODE_SIGN);
++                sigLen = obj.signPreComputedHash(ram_buf, (short)0, lc, ram_buf, lc);
++
++                if(JCSystem.isObjectDeletionSupported()) {
++                    JCSystem.requestObjectDeletion();
++                }
+             } else {
+                 ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+             }
+@@ -1331,8 +1341,12 @@ private void computeDigitalSignature(APDU apdu) throws ISOException {
+             // Get the key - it must be a EC private key,
+             // checks have been done in MANAGE SECURITY ENVIRONMENT.
+             ECPrivateKey ecKey = (ECPrivateKey) keys[currentPrivateKeyRef[0]];
++            Signature ecdsaSignature = Signature.getInstance(MessageDigest.ALG_NULL, Signature.SIG_CIPHER_ECDSA, Cipher.PAD_NULL, false);
+             ecdsaSignature.init(ecKey, Signature.MODE_SIGN);
+             sigLen = ecdsaSignature.sign(ram_buf, (short)0, lc, apdu.getBuffer(), (short)0);
++            if(JCSystem.isObjectDeletionSupported()) {
++                JCSystem.requestObjectDeletion();
++            }
+             apdu.setOutgoingAndSend((short) 0, sigLen);
+             break;
+ 
