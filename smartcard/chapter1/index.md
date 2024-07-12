@@ -1,4 +1,4 @@
-# The saga of using a virtual smart card
+# The saga of the virtual smart card
 © redcubie, 2023
 
 ## Preface
