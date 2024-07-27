@@ -173,6 +173,13 @@ git apply jcardsim_printerrors.patch
 
 
 ### Step 6 - build jCardSim
+Override Java version (won't build if your Java is too new)
+
+```sh
+export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+```
+
+
 Initialize the build system
 
 ```sh
